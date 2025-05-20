@@ -33,6 +33,8 @@ type QueryParams struct {
 }
 
 func (s *Collection) Query(fieldName string, params QueryParams) ([]Document, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	index, ok := s.indexes[fieldName]
 	if !ok {
 		return nil, errors.New("index does not exist")
@@ -56,12 +58,18 @@ func (s *Collection) Query(fieldName string, params QueryParams) ([]Document, er
 		}
 
 		for id := range index.Data[key] {
-			if doc, ok := s.documents[id]; ok {
+			if doc, ok := s.documents[id]; !ok {
+				slog.Warn("missing document ID in index", "id", id, "field", fieldName, "key", key)
+				continue
+
+			} else {
 				result = append(result, doc)
 			}
 		}
 	}
+
 	return result, nil
+
 }
 
 func (s *Collection) CreateIndex(fieldName string) error {
@@ -74,7 +82,7 @@ func (s *Collection) CreateIndex(fieldName string) error {
 		Data:       make(map[string]map[string]struct{}),
 		SortedKeys: []string{},
 	}
-
+	s.mu.Lock()
 	for id, doc := range s.documents {
 		field, ok := doc.Fields[fieldName]
 		if !ok || field.Type != DocumentFieldTypeString {
@@ -94,6 +102,7 @@ func (s *Collection) CreateIndex(fieldName string) error {
 		s.indexes = map[string]*Index{}
 	}
 	s.indexes[fieldName] = index
+	s.mu.Unlock()
 	return nil
 }
 
@@ -101,7 +110,9 @@ func (s *Collection) DeleteIndex(fieldName string) error {
 	if _, exists := s.indexes[fieldName]; !exists {
 		return errors.New("index does not exist")
 	}
+	s.mu.Lock()
 	delete(s.indexes, fieldName)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -118,8 +129,7 @@ type CollectionConfig struct {
 
 func (s *Collection) Put(doc Document) error {
 	// Потрібно перевірити що документ містить поле `{cfg.PrimaryKey}` типу `string`
-	s.mu.Lock()
-	defer s.mu.Unlock()
+
 	keyFilds, ok := doc.Fields[s.config.PrimaryKey]
 	if !ok {
 		slog.Error("error: Document must contain a key field")
@@ -138,7 +148,9 @@ func (s *Collection) Put(doc Document) error {
 	if s.documents == nil {
 		s.documents = map[string]Document{}
 	}
+	s.mu.Lock()
 	s.documents[keyValue] = doc
+	s.mu.Unlock()
 	slog.Info("document added")
 
 	return nil
